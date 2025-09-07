@@ -9,6 +9,7 @@ import {
   Alert,
   ActivityIndicator,
   SafeAreaView,
+  TextInput,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { GoogleGenerativeAI } from '@google/generative-ai';
@@ -52,48 +53,37 @@ const diseaseRecommendations = {
 };
 
 export default function App() {
-  const [selectedImage, setSelectedImage] = useState(null);
+  const [selectedImages, setSelectedImages] = useState([]);
   const [diagnosis, setDiagnosis] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [form, setForm] = useState({
+    zona: '',
+    antecedentes: '',
+    sintomas: '',
+    tiempo: '',
+    factores: '',
+  });
+  const [formVisible, setFormVisible] = useState(false);
 
-  // Tomar foto con la cámara
-  const takePhoto = async () => {
-    try {
-      // Solicitar permisos
-      const { status } = await ImagePicker.requestCameraPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permiso denegado', 'Se necesita acceso a la cámara para tomar fotos');
-        return;
-      }
-
-      const result = await ImagePicker.launchCameraAsync({
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
-      });
-
-      if (!result.canceled) {
-        setSelectedImage(result.assets[0].uri);
-      }
-    } catch (error) {
-      Alert.alert('Error', 'No se pudo tomar la foto: ' + error.message);
-    }
-  };
-
-  // Seleccionar imagen de la galería
-  const pickImage = async () => {
+  // Seleccionar entre 3 y 5 imágenes
+  const pickImages = async () => {
     try {
       const result = await ImagePicker.launchImageLibraryAsync({
-        allowsEditing: true,
-        aspect: [1, 1],
+        allowsMultipleSelection: true,
+        selectionLimit: 5,
         quality: 0.8,
       });
-
       if (!result.canceled) {
-        setSelectedImage(result.assets[0].uri);
+        const images = result.assets.map(asset => asset.uri);
+        if (images.length < 3 || images.length > 5) {
+          Alert.alert('Selecciona entre 3 y 5 fotos.');
+          return;
+        }
+        setSelectedImages(images);
+        setFormVisible(true);
       }
     } catch (error) {
-      Alert.alert('Error', 'No se pudo seleccionar la imagen: ' + error.message);
+      Alert.alert('Error', 'No se pudo seleccionar las imágenes: ' + error.message);
     }
   };
 
@@ -113,72 +103,81 @@ export default function App() {
     }
   };
 
-  // Analizar imagen con Gemini
-  const analyzeImage = async () => {
-    if (!selectedImage) {
-      Alert.alert('Error', 'Por favor selecciona una imagen primero');
+  // Analizar imágenes con Gemini y datos adicionales
+  const analyzeImages = async () => {
+    if (selectedImages.length < 3) {
+      Alert.alert('Error', 'Por favor selecciona entre 3 y 5 imágenes primero');
       return;
     }
-
     if (!config.GEMINI_API_KEY || config.GEMINI_API_KEY === 'TU_API_KEY_DE_GEMINI_AQUI') {
       Alert.alert('Error', 'Por favor configura tu API key de Gemini en config.js');
       return;
     }
-
     setLoading(true);
     try {
-      const base64Image = await imageToBase64(selectedImage);
-      
+      const base64Images = [];
+      for (const uri of selectedImages) {
+        base64Images.push(await imageToBase64(uri));
+      }
       const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+      const prompt = `Analiza las siguientes imágenes de piel y proporciona un diagnóstico dermatológico.
       
-      const prompt = `Analiza esta imagen de piel y proporciona un diagnóstico dermatológico.
+      Datos adicionales del paciente:
+      - Zona del cuerpo afectada: ${form.zona}
+      - Antecedentes médicos relevantes: ${form.antecedentes}
+      - Síntomas asociados: ${form.sintomas}
+      - Tiempo de evolución: ${form.tiempo}
+      - Factores externos: ${form.factores}
       
       Instrucciones específicas:
-      1. Examina cuidadosamente la imagen en busca de lesiones, erupciones, cambios de color, textura o cualquier anomalía visible
-      2. Identifica la condición dermatológica más probable basándose en las características visuales
+      1. Examina cuidadosamente las imágenes en busca de lesiones, erupciones, cambios de color, textura o cualquier anomalía visible
+      2. Identifica la condición dermatológica más probable basándose en las características visuales y los datos proporcionados
       3. Responde ÚNICAMENTE con el nombre de la condición en español, en minúsculas
       4. Si detectas múltiples condiciones, menciona la más prominente
       5. Condiciones comunes a considerar: acné, dermatitis, psoriasis, eczema, herpes zoster, melanoma, rosácea, vitiligo
       6. Si no puedes identificar claramente una condición, responde "condición no identificada"
       
       Importante: Tu respuesta debe ser solo el nombre de la condición dermatológica, sin explicaciones adicionales.`;
-
-      const result = await model.generateContent([
-        prompt,
-        {
+      const geminiInputs = [prompt];
+      base64Images.forEach(img => {
+        geminiInputs.push({
           inlineData: {
             mimeType: "image/jpeg",
-            data: base64Image
+            data: img
           }
-        }
-      ]);
-
+        });
+      });
+      const result = await model.generateContent(geminiInputs);
       const response = await result.response;
       const diagnosisText = response.text().toLowerCase().trim();
-      
-      // Buscar recomendaciones
       const recommendation = diseaseRecommendations[diagnosisText] || {
         description: 'Condición no identificada en nuestra base de datos',
         medications: ['Consulta con un dermatólogo'],
         advice: 'Se recomienda evaluación médica profesional para un diagnóstico preciso'
       };
-
       setDiagnosis({
         condition: diagnosisText,
         ...recommendation
       });
-
     } catch (error) {
       console.error('Error:', error);
-      Alert.alert('Error', 'No se pudo analizar la imagen. Verifica tu conexión y API key.');
+      Alert.alert('Error', 'No se pudo analizar las imágenes. Verifica tu conexión y API key.');
     } finally {
       setLoading(false);
     }
   };
 
   const resetApp = () => {
-    setSelectedImage(null);
+    setSelectedImages([]);
     setDiagnosis(null);
+    setForm({
+      zona: '',
+      antecedentes: '',
+      sintomas: '',
+      tiempo: '',
+      factores: '',
+    });
+    setFormVisible(false);
   };
 
   return (
@@ -186,61 +185,107 @@ export default function App() {
       <ScrollView contentContainerStyle={styles.scrollContainer}>
         <Text style={styles.title}>DermaDiagnostic</Text>
         <Text style={styles.subtitle}>Diagnóstico dermatológico con IA</Text>
-
-        {!selectedImage ? (
+        <Text style={{color: 'red', fontWeight: 'bold', marginBottom: 10}}>
+          Este análisis es orientativo, no reemplaza la consulta médica
+        </Text>
+        {!selectedImages.length ? (
           <View style={styles.imagePickerContainer}>
             <Text style={styles.instructionText}>
-              Toma una foto o selecciona una imagen de la lesión cutánea para analizar
+              Selecciona entre 3 y 5 fotos de la lesión cutánea desde diferentes ángulos, distancias y condiciones de luz
             </Text>
-            
-            <TouchableOpacity style={styles.button} onPress={takePhoto}>
-              <Text style={styles.buttonText}>📷 Tomar Foto</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity style={[styles.button, styles.secondaryButton]} onPress={pickImage}>
-              <Text style={styles.buttonText}>🖼️ Seleccionar de Galería</Text>
+            <TouchableOpacity style={styles.button} onPress={pickImages}>
+              <Text style={styles.buttonText}>🖼️ Seleccionar Fotos</Text>
             </TouchableOpacity>
           </View>
-        ) : (
+        ) : formVisible ? (
           <View style={styles.imageContainer}>
-            <Image source={{ uri: selectedImage }} style={styles.selectedImage} />
-            
-            <View style={styles.buttonContainer}>
-              <TouchableOpacity 
-                style={[styles.button, loading && styles.disabledButton]} 
-                onPress={analyzeImage}
-                disabled={loading}
-              >
-                {loading ? (
-                  <ActivityIndicator color="#fff" />
-                ) : (
-                  <Text style={styles.buttonText}>🔍 Analizar Imagen</Text>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity style={[styles.button, styles.secondaryButton]} onPress={resetApp}>
-                <Text style={styles.buttonText}>🔄 Nueva Imagen</Text>
-              </TouchableOpacity>
+            <Text style={{fontWeight: 'bold', marginBottom: 8}}>
+              {selectedImages.length} fotos seleccionadas
+            </Text>
+            <ScrollView horizontal>
+              {selectedImages.map((img, idx) => (
+                <Image key={idx} source={{ uri: img }} style={{ width: 100, height: 100, marginRight: 8, borderRadius: 8 }} />
+              ))}
+            </ScrollView>
+            <View style={{marginTop: 16}}>
+              <Text style={{fontWeight: 'bold', marginBottom: 8}}> Completa la información para enriquecer el análisis:</Text>
+              <View style={{marginBottom: 8}}>
+                <Text style={{marginBottom: 4}}> Zona del cuerpo afectada:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ejemplo: brazo, cuero cabelludo, espalda"
+                  value={form.zona}
+                  onChangeText={text => setForm(f => ({...f, zona: text}))}
+                />
+              </View>
+              <View style={{marginBottom: 8}}>
+                <Text style={{marginBottom: 4}}> Antecedentes médicos relevantes:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ejemplo: alergias, enfermedades previas"
+                  value={form.antecedentes}
+                  onChangeText={text => setForm(f => ({...f, antecedentes: text}))}
+                />
+              </View>
+              <View style={{marginBottom: 8}}>
+                <Text style={{marginBottom: 4}}> Síntomas asociados:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ejemplo: picazón, dolor, secreción, fiebre"
+                  value={form.sintomas}
+                  onChangeText={text => setForm(f => ({...f, sintomas: text}))}
+                />
+              </View>
+              <View style={{marginBottom: 8}}>
+                <Text style={{marginBottom: 4}}> Tiempo de evolución:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ejemplo: días, semanas, meses"
+                  value={form.tiempo}
+                  onChangeText={text => setForm(f => ({...f, tiempo: text}))}
+                />
+              </View>
+              <View style={{marginBottom: 8}}>
+                <Text style={{marginBottom: 4}}>Factores externos:</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Ejemplo: contacto con animales, exposición solar, uso de químicos"
+                  value={form.factores}
+                  onChangeText={text => setForm(f => ({...f, factores: text}))}
+                />
+              </View>
+              <View style={styles.buttonContainer}>
+                <TouchableOpacity 
+                  style={[styles.button, loading && styles.disabledButton]} 
+                  onPress={analyzeImages}
+                  disabled={loading}
+                >
+                  {loading ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <Text style={styles.buttonText}>🔍 Analizar</Text>
+                  )}
+                </TouchableOpacity>
+                <TouchableOpacity style={[styles.button, styles.secondaryButton]} onPress={resetApp}>
+                  <Text style={styles.buttonText}>🔄 Nueva Consulta</Text>
+                </TouchableOpacity>
+              </View>
             </View>
           </View>
-        )}
-
+        ) : null
+        }
         {diagnosis && (
           <View style={styles.diagnosisContainer}>
             <Text style={styles.diagnosisTitle}>Diagnóstico</Text>
             <Text style={styles.conditionText}>{diagnosis.condition.toUpperCase()}</Text>
-            
             <Text style={styles.sectionTitle}>Descripción:</Text>
             <Text style={styles.descriptionText}>{diagnosis.description}</Text>
-
             <Text style={styles.sectionTitle}>Tratamientos recomendados:</Text>
             {diagnosis.medications.map((med, index) => (
               <Text key={index} style={styles.medicationText}>• {med}</Text>
             ))}
-
             <Text style={styles.sectionTitle}>Consejos:</Text>
             <Text style={styles.adviceText}>{diagnosis.advice}</Text>
-
             <View style={styles.disclaimer}>
               <Text style={styles.disclaimerText}>
                 ⚠️ IMPORTANTE: Este diagnóstico es orientativo. Siempre consulta con un dermatólogo profesional para un diagnóstico definitivo y tratamiento adecuado.
@@ -254,6 +299,14 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  input: {
+    borderWidth: 1,
+    borderColor: '#ccc',
+    borderRadius: 8,
+    padding: 10,
+    marginBottom: 4,
+    backgroundColor: '#fff',
+  },
   container: {
     flex: 1,
     backgroundColor: '#f5f5f5',
